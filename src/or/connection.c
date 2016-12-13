@@ -282,6 +282,10 @@ or_connection_new(int type, int socket_family)
   if (type == CONN_TYPE_EXT_OR)
     connection_or_set_ext_or_identifier(or_conn);
 
+  memset(&or_conn->throttle, 0, sizeof(or_conn->throttle));
+  /* start unthrottled */
+  or_conn->throttle.bandwidthrate = -1;
+
   return or_conn;
 }
 
@@ -3060,6 +3064,11 @@ connection_bucket_refill(int milliseconds_elapsed, time_t now)
                                   relayrate, relayburst,
                                   milliseconds_elapsed,
                                   "global_relayed_write_bucket");
+
+  /* jwang */
+  if (options->PerConnSplitBits) {
+    connection_or_throttle_bitsplitting(conns, options);  
+  }
 
   /* If buckets were empty before and have now been refilled, tell any
    * interested controllers. */

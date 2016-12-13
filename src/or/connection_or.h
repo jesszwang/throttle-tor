@@ -100,6 +100,8 @@ var_cell_t *var_cell_new(uint16_t payload_len);
 var_cell_t *var_cell_copy(const var_cell_t *src);
 void var_cell_free(var_cell_t *cell);
 
+void connection_or_throttle_bitsplitting(smartlist_t *conns, or_options_t *options);
+
 /** DOCDOC */
 #define MIN_LINK_PROTO_FOR_WIDE_CIRC_IDS 4
 

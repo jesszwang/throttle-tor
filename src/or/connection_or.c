@@ -796,9 +796,31 @@ connection_or_update_token_buckets_helper(or_connection_t *conn, int reset,
     /* Not a recognized relay. Squeeze it down based on the suggested
      * bandwidth parameters in the consensus, but allow local config
      * options to override. */
-    rate = options->PerConnBWRate ? (int)options->PerConnBWRate :
+    /*  rate = options->PerConnBWRate ? (int)options->PerConnBWRate :
         networkstatus_get_param(NULL, "perconnbwrate",
-                                (int)options->BandwidthRate, 1, INT32_MAX);
+                                (int)options->BandwidthRate, 1, INT32_MAX); */
+    
+     if(options->PerConnSplitBits) {
+        if(conn->throttle.bandwidthrate < 0) {
+            /* no throttling, give it full bandwidth */
+            rate = (int)options->BandwidthRate;
+        } else {
+            /* use the rate adaptively chosen by the throttling algorithm */
+            rate = conn->throttle.bandwidthrate;
+            log_info(LD_OR,"adaptively adjusted bandwidth rate " 
+                     "from %d to %d on connection %lu to %s:%u",
+                    conn->bandwidthrate, rate, conn->base_.global_identifier,
+                    conn->base_.address, conn->base_.port);
+        }
+    } else {
+        /* rate defaults to config then consensus */
+         rate = options->PerConnBWRate ? (int)options->PerConnBWRate :
+            (int)networkstatus_get_param(NULL, "bwconnrate",
+                                         (int)options->BandwidthRate, 1, INT32_MAX);
+    }
+ 
+    /* burst defaults to config then consensus */
+
     burst = options->PerConnBWBurst ? (int)options->PerConnBWBurst :
         networkstatus_get_param(NULL, "perconnbwburst",
                                 (int)options->BandwidthBurst, 1, INT32_MAX);
@@ -852,6 +874,28 @@ connection_or_update_token_buckets(smartlist_t *conns,
     if (connection_speaks_cells(conn))
       connection_or_update_token_buckets_helper(TO_OR_CONN(conn), 0, options);
   });
+}
+
+/* jwang */
+void
+connection_or_throttle_bitsplitting(smartlist_t *conns, or_options_t *options) {
+  smartlist_t* or_conns = smartlist_new();
+  SMARTLIST_FOREACH(conns, connection_t *, conn,
+  {
+    if (connection_speaks_cells(conn) && conn->state == OR_CONN_STATE_OPEN) {
+        smartlist_add(or_conns, TO_OR_CONN(conn));
+    }
+  });
+  int len = smartlist_len(or_conns);
+  if(len > 0) {
+      int rate = (int) floor((int)options->BandwidthRate / len);
+      SMARTLIST_FOREACH(or_conns, or_connection_t *, or_conn,
+      {
+          or_conn->throttle.bandwidthrate = rate;
+          connection_or_update_token_buckets_helper(or_conn, 0, options);
+      });
+  }
+  smartlist_free(or_conns);
 }
 
 /** How long do we wait before killing non-canonical OR connections with no

@@ -358,6 +358,7 @@ static config_var_t option_vars_[] = {
   V(PathsNeededToBuildCircuits,  DOUBLE,   "-1"),
   V(PerConnBWBurst,              MEMUNIT,  "0"),
   V(PerConnBWRate,               MEMUNIT,  "0"),
+  V(PerConnSplitBits,            INT,      "0"),
   V(PidFile,                     STRING,   NULL),
   V(TestingTorNetwork,           BOOL,     "0"),
   V(TestingMinExitFlagThreshold, MEMUNIT,  "0"),
@@ -1614,6 +1615,10 @@ options_act(const or_options_t *old_options)
   } else if (!cell_ewma_enabled() && old_ewma_enabled) {
     /* Turn it off everywhere */
     channel_set_cmux_policy_everywhere(NULL);
+  }
+
+  if (options->PerConnSplitBits) {
+    log_notice(LD_CONFIG,"enabled adaptive throttling using bit-splitting");
   }
 
   /* Update the BridgePassword's hashed version as needed.  We store this as a

@@ -1202,6 +1202,12 @@ typedef struct server_port_cfg_t {
 #define CONTROL_CONNECTION_MAGIC 0x8abc765du
 #define LISTENER_CONNECTION_MAGIC 0x1a1ac741u
 
+/* jwang */
+typedef struct pc_throttle_t {
+   /** our current adaptive bandwidth rate */
+   int bandwidthrate;
+} pc_throttle_t;
+
 /** Description of a connection to another host or process, and associated
  * data.
  *
@@ -1546,6 +1552,8 @@ typedef struct or_connection_t {
    * bytes TLS actually sent - used for overhead estimation for scheduling.
    */
   uint64_t bytes_xmitted, bytes_xmitted_by_tls;
+
+  pc_throttle_t throttle;
 } or_connection_t;
 
 /** Subtype of connection_t for an "edge connection" -- that is, an entry (ap)
@@ -3718,6 +3726,9 @@ typedef struct {
                                  * use in a second for all relayed conns? */
   uint64_t PerConnBWRate; /**< Long-term bw on a single TLS conn, if set. */
   uint64_t PerConnBWBurst; /**< Allowed burst on a single TLS conn, if set. */
+  
+  int PerConnSplitBits; /**bit splitting algo jwang*/
+  
   int NumCPUs; /**< How many CPUs should we try to use? */
 //int RunTesting; /**< If true, create testing circuits to measure how well the
 //                 * other ORs are running. */
