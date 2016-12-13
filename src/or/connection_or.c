@@ -939,9 +939,9 @@ connection_or_throttle_threshold(smartlist_t *conns, or_options_t *options, time
 
   int or_conns_len = smartlist_len(or_conns);
   log_info(LD_OR, "jwang6");
-  /*if(or_conns_len == 0){
+  if(or_conns_len == 0){
       goto done;
-  }*/
+  }
 
   log_info(LD_OR, "jwang5");
 
@@ -950,6 +950,11 @@ connection_or_throttle_threshold(smartlist_t *conns, or_options_t *options, time
   log_info(LD_OR, "jwang8");
   or_connection_t *selection = smartlist_get(or_conns, selection_index);
   log_info(LD_OR, "jwang7");
+  log_info(LD_OR, "dzuo");
+  log_info(LD_OR, "dzuo: selection_index = %i", selection_index);
+  log_info(LD_OR, "dzuo: or_conns_len = %i", or_conns_len);
+  log_info(LD_OR, "dzuo: or_conns = %f", or_conns);
+  log_info(LD_OR, "dzuo: selection->throttle.ewma = %f", selection);
   double selection_cell_count = selection->throttle.ewma.cell_count;
   log_info(LD_OR, "jwang9");
   log_notice(LD_OR, "adaptive throttling selected connection %i of %i with cell"
