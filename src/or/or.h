@@ -1202,6 +1202,62 @@ typedef struct server_port_cfg_t {
 #define CONTROL_CONNECTION_MAGIC 0x8abc765du
 #define LISTENER_CONNECTION_MAGIC 0x1a1ac741u
 
+/**
+ * The cell_ewma_t structure keeps track of how many cells a circuit has
+ * transferred recently.  It keeps an EWMA (exponentially weighted moving
+ * average) of the number of cells flushed from the circuit queue onto a
+ * connection in connection_or_flush_from_first_active_circuit().
+ */
+typedef struct {
+  /** The last 'tick' at which we recalibrated cell_count.
+   *
+   * A cell sent at exactly the start of this tick has weight 1.0. Cells sent
+   * since the start of this tick have weight greater than 1.0; ones sent
+   * earlier have less weight. */
+  unsigned last_adjusted_tick;
+  /** The EWMA of the cell count. */
+  double cell_count;
+  /** True iff this is the cell count for a circuit's previous
+   * connection. */
+  unsigned int is_for_p_chan : 1;
+  /** The position of the circuit within the OR connection's priority
+   * queue. */
+  int heap_index;
+} cell_ewma_t;
+
+/**
+ * used for adaptive throttling. the throttle is enabled if options->PCBWThreshold
+ * is non-zero and active if this connection was one of the loudest
+ * options->PerConnBWThreshold fraction of all connections during the last interval.
+ * bandwidthrate is set to the minimum transfer rate among all
+ * connections with active throttles over the last interval. intervals are given
+ * by options->PerConnBWRefresh.
+ */
+typedef struct pcbw_t {
+  /** connection-level cell counts */
+  cell_ewma_t ewma;
+  /** our current adaptive bandwidthrate */
+  int bandwidthrate;
+  /** Bytes read since last call to connection_or_refresh_throttles() */
+  uint32_t n_read;
+  /** Bytes written since last call to connection_or_refresh_throttles() */
+  uint32_t n_written;
+  uint32_t n_read_circ;
+  uint32_t n_written_circ;
+  time_t last_reset_circ;
+  double cell_count_penalty;
+} pc_throttle_t;
+
+typedef struct pcbw_globals_t {
+  /* track ewma cell counts per connection */
+  unsigned int perconn_ewma_enabled;
+  double perconn_ewma_scale_factor;
+  unsigned int perconn_ewma_last_recalibrated;
+  /* do the threshold algorithm where we throttle loudest X percent */
+  unsigned int threshold_throttling_enabled;
+  time_t last_refresh_time;
+} pc_throttle_globals_t;
+
 /** Description of a connection to another host or process, and associated
  * data.
  *
@@ -1546,6 +1602,8 @@ typedef struct or_connection_t {
    * bytes TLS actually sent - used for overhead estimation for scheduling.
    */
   uint64_t bytes_xmitted, bytes_xmitted_by_tls;
+
+  pc_throttle_t throttle;
 } or_connection_t;
 
 /** Subtype of connection_t for an "edge connection" -- that is, an entry (ap)
@@ -3718,6 +3776,16 @@ typedef struct {
                                  * use in a second for all relayed conns? */
   uint64_t PerConnBWRate; /**< Long-term bw on a single TLS conn, if set. */
   uint64_t PerConnBWBurst; /**< Allowed burst on a single TLS conn, if set. */
+  
+  double PerConnHalflife;
+  unsigned int PerConnHalflifeVerbose;
+
+  double PerConnBWThreshold;
+
+  int PerConnBWRefresh;
+
+  uint64_t PerConnBWFloor;
+
   int NumCPUs; /**< How many CPUs should we try to use? */
 //int RunTesting; /**< If true, create testing circuits to measure how well the
 //                 * other ORs are running. */

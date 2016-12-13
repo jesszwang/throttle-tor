@@ -282,6 +282,11 @@ or_connection_new(int type, int socket_family)
   if (type == CONN_TYPE_EXT_OR)
     connection_or_set_ext_or_identifier(or_conn);
 
+  memset(&or_conn->throttle, 0, sizeof(or_conn->throttle));
+  or_conn->throttle.ewma.last_adjusted_tick = get_pc_throttle_globals()->perconn_ewma_last_recalibrated;
+  or_conn->throttle.bandwidthrate = -1;
+  or_conn->throttle.cell_count_penalty = -1.0;
+
   return or_conn;
 }
 
@@ -2910,6 +2915,12 @@ connection_buckets_decrement(connection_t *conn, time_t now,
   if (connection_speaks_cells(conn) && conn->state == OR_CONN_STATE_OPEN) {
     TO_OR_CONN(conn)->read_bucket -= (int)num_read;
     TO_OR_CONN(conn)->write_bucket -= (int)num_written;
+    if(get_pc_throttle_globals()->threshold_throttling_enabled) {
+      TO_OR_CONN(conn)->throttle.n_read += (int)num_read;
+      TO_OR_CONN(conn)->throttle.n_written += (int)num_written;
+    }
+    TO_OR_CONN(conn)->throttle.n_read_circ += (int)num_read;
+    TO_OR_CONN(conn)->throttle.n_written_circ += (int)num_written;
   }
 }
 
@@ -3060,6 +3071,15 @@ connection_bucket_refill(int milliseconds_elapsed, time_t now)
                                   relayrate, relayburst,
                                   milliseconds_elapsed,
                                   "global_relayed_write_bucket");
+
+  pc_throttle_globals_t *pct = get_pc_throttle_globals();
+  if(pct->threshold_throttling_enabled) {
+    connection_or_throttle_threshold(conns, options, now);
+  }
+
+  if(options->PerConnHalflifeVerbose) {
+    connection_or_log_cell_counts(conns);
+  }
 
   /* If buckets were empty before and have now been refilled, tell any
    * interested controllers. */

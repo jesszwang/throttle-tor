@@ -100,6 +100,10 @@ var_cell_t *var_cell_new(uint16_t payload_len);
 var_cell_t *var_cell_copy(const var_cell_t *src);
 void var_cell_free(var_cell_t *cell);
 
+pc_throttle_globals_t* get_pc_throttle_globals();
+void connection_or_throttle_threshold(smartlist_t *conns, or_options_t *options, time_t now);
+void connection_or_log_cell_counts(smartlist_t *conns);
+
 /** DOCDOC */
 #define MIN_LINK_PROTO_FOR_WIDE_CIRC_IDS 4
 

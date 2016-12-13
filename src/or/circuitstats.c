@@ -719,6 +719,10 @@ circuit_build_times_get_xm(circuit_build_times_t *cbt)
    * haven't observed at least CBT_MIN_MIN_CIRCUITS_TO_OBSERVE circuits. */
   tor_assert(bin_counts > 0);
 
+  if (bin_counts == 0) {
+    bin_counts = 1;
+  }
+
   ret /= bin_counts;
   tor_free(histogram);
   tor_free(nth_max_bin);

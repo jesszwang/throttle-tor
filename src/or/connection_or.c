@@ -9,6 +9,7 @@
  * \brief Functions to handle OR connections, TLS handshaking, and
  * cells on the network.
  **/
+#include <math.h>
 #include "or.h"
 #include "buffers.h"
 /*
@@ -81,6 +82,11 @@ static digestmap_t *orconn_identity_map = NULL;
 /** Global map between Extended ORPort identifiers and OR
  *  connections. */
 static digestmap_t *orconn_ext_or_id_map = NULL;
+
+pc_throttle_globals_t pcbw_globals = {0,0,0,0,0,};
+pc_throttle_globals_t* get_pc_throttle_globals() {
+  return &pcbw_globals;
+}
 
 /** If conn is listed in orconn_identity_map, remove it, and clear
  * conn->identity_digest.  Otherwise do nothing. */
@@ -796,9 +802,27 @@ connection_or_update_token_buckets_helper(or_connection_t *conn, int reset,
     /* Not a recognized relay. Squeeze it down based on the suggested
      * bandwidth parameters in the consensus, but allow local config
      * options to override. */
-    rate = options->PerConnBWRate ? (int)options->PerConnBWRate :
-        networkstatus_get_param(NULL, "perconnbwrate",
-                                (int)options->BandwidthRate, 1, INT32_MAX);
+    pc_throttle_globals_t *pct = get_pc_throttle_globals();
+    if(pct->threshold_throttling_enabled) {
+        if(conn->throttle.bandwidthrate < 0) {
+            /* no throttling, give it full bandwidth */
+            rate = (int)options->BandwidthRate;
+        } else {
+            /* use the rate adaptively chosen by the throttling algorithm */
+            rate = conn->throttle.bandwidthrate;
+            log_info(LD_OR,"adaptively adjusted bandwidth rate "
+                    "from %d to %d on connection %lu to %s:%u",
+                    conn->bandwidthrate, rate, conn->base_.global_identifier,
+                    conn->base_.address, conn->base_.port);
+        }
+    } else {
+        /* rate defaults to config then consensus */
+        rate = options->PerConnBWRate ? (int)options->PerConnBWRate :
+            (int)networkstatus_get_param(NULL, "bwconnrate",
+                                         (int)options->BandwidthRate, 1, INT32_MAX);
+    }    
+
+
     burst = options->PerConnBWBurst ? (int)options->PerConnBWBurst :
         networkstatus_get_param(NULL, "perconnbwburst",
                                 (int)options->BandwidthBurst, 1, INT32_MAX);
@@ -853,6 +877,136 @@ connection_or_update_token_buckets(smartlist_t *conns,
       connection_or_update_token_buckets_helper(TO_OR_CONN(conn), 0, options);
   });
 }
+
+static int
+_connection_or_refresh_compare(const void **a, const void **b) {
+    const or_connection_t *or_conn_a = *a, *or_conn_b = *b;
+    if(or_conn_a->throttle.ewma.cell_count < or_conn_b->throttle.ewma.cell_count)
+        return -1;
+    else if(or_conn_a->throttle.ewma.cell_count > or_conn_b->throttle.ewma.cell_count)
+        return 1;
+    else
+        return 0;
+}
+
+/**
+ * create and return new list of all open or connections to nonrelays.
+ * caller must free list.
+ */
+static smartlist_t *
+connection_or_get_active_nonrelay(smartlist_t *conns) {
+  smartlist_t* or_conns = smartlist_new();
+  SMARTLIST_FOREACH(conns, connection_t *, conn,
+  {
+    if (connection_speaks_cells(conn) && conn->state == OR_CONN_STATE_OPEN) {
+        or_connection_t* or_conn = TO_OR_CONN(conn);
+        if(!connection_or_digest_is_known_relay(or_conn->identity_digest)) {
+          smartlist_add(or_conns, TO_OR_CONN(conn));
+        }
+    }
+  });
+  return or_conns;
+}
+
+/** take out the open OR connections into a list, sort it, and cut off the top.
+* for those that change their throttle state by either becoming throttled
+* when they were not before, or were throttled but now are not, update
+* their token buckets with connection_or_update_token_buckets_helper.
+*/
+void
+connection_or_throttle_threshold(smartlist_t *conns, or_options_t *options, time_t now)
+{
+  pc_throttle_globals_t *pct = get_pc_throttle_globals();
+  log_info(LD_OR, "jwang1");
+  /* is it time to adaptively update pcbw throttles? */
+  int time_to_refresh = pct->last_refresh_time + options->PerConnBWRefresh <= now;
+  if(!time_to_refresh) {
+    return;
+  }
+
+  log_info(LD_OR, "jwang2");
+
+  /* refresh the throttles by analyzing transfer rates and threshold */
+  /* TODO there's probably a more efficient way of doing this */
+  smartlist_t* or_conns = connection_or_get_active_nonrelay(conns);
+
+  log_info(LD_OR, "jwang3");
+
+  /* sort by connection-level cell counts */
+  smartlist_sort(or_conns, &_connection_or_refresh_compare);
+
+  log_info(LD_OR, "jwang4");
+
+  int or_conns_len = smartlist_len(or_conns);
+  log_info(LD_OR, "jwang6");
+  /*if(or_conns_len == 0){
+      goto done;
+  }*/
+
+  log_info(LD_OR, "jwang5");
+
+  /* select the connection by the configured percentile */
+  int selection_index = (int)floor(options->PerConnBWThreshold * or_conns_len);
+  log_info(LD_OR, "jwang8");
+  or_connection_t *selection = smartlist_get(or_conns, selection_index);
+  log_info(LD_OR, "jwang7");
+  double selection_cell_count = selection->throttle.ewma.cell_count;
+  log_info(LD_OR, "jwang9");
+  log_notice(LD_OR, "adaptive throttling selected connection %i of %i with cell"
+          " count %f using threshold %f", selection_index, or_conns_len,
+          selection_cell_count, options->PerConnBWThreshold);
+
+  /* set our throttle rate as the approx throughput of this connection */
+  unsigned int throttle_rate = (unsigned int)((selection->throttle.n_written +
+          selection->throttle.n_read) / 2 / (now - pct->last_refresh_time));
+
+  /* dont throttle below configured minimum */
+  if(throttle_rate > 0 && throttle_rate <= options->PerConnBWFloor) {
+      log_notice(LD_OR, "using configured minimum throttle rate of %lu bytes per second"
+              "instead of computed rate of %u bytes per second",
+              options->PerConnBWFloor, throttle_rate);
+      throttle_rate = options->PerConnBWFloor;
+  } else {
+    log_notice(LD_OR, "using adaptive throttle rate of %u bytes per second",
+            throttle_rate);
+  }
+
+  /* now go through and set the new limits, updating token buckets if needed */
+  SMARTLIST_FOREACH(or_conns, or_connection_t *, or_conn,
+  {
+    int old_rate = or_conn->throttle.bandwidthrate;
+    if(or_conn->throttle.ewma.cell_count >= selection_cell_count) {
+      or_conn->throttle.bandwidthrate = throttle_rate;
+    } else {
+      /* not throttled */
+      or_conn->throttle.bandwidthrate = -1;
+    }
+    if(or_conn->throttle.bandwidthrate != old_rate) {
+        connection_or_update_token_buckets_helper(or_conn, 0, options);
+    }
+    or_conn->throttle.n_read = or_conn->throttle.n_written = 0;
+  });
+
+  pct->last_refresh_time = now;
+
+done:
+  smartlist_free(or_conns);
+}
+
+void
+connection_or_log_cell_counts(smartlist_t *conns) {
+  smartlist_t* or_conns = connection_or_get_active_nonrelay(conns);
+
+  SMARTLIST_FOREACH(or_conns, or_connection_t *, or_conn,
+  {
+      log_notice(LD_OR,"cell count %f for connection %lu to %s:%u",
+            or_conn->throttle.ewma.cell_count, or_conn->base_.global_identifier,
+            or_conn->base_.address, or_conn->base_.port);
+  });
+
+  smartlist_free(or_conns);
+}
+
 
 /** How long do we wait before killing non-canonical OR connections with no
  * circuits?  In Tor versions up to 0.2.1.25 and 0.2.2.12-alpha, we waited 15

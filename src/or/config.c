@@ -358,6 +358,11 @@ static config_var_t option_vars_[] = {
   V(PathsNeededToBuildCircuits,  DOUBLE,   "-1"),
   V(PerConnBWBurst,              MEMUNIT,  "0"),
   V(PerConnBWRate,               MEMUNIT,  "0"),
+  V(PerConnHalflife,		 DOUBLE,   "-1.0"),
+  V(PerConnHalflifeVerbose,	 UINT,     "0"),
+  V(PerConnBWThreshold, 	 DOUBLE,   "0.0"),
+  V(PerConnBWRefresh, 		 UINT,	   "0"),
+  V(PerConnBWFloor,		 MEMUNIT,  "0"),
   V(PidFile,                     STRING,   NULL),
   V(TestingTorNetwork,           BOOL,     "0"),
   V(TestingMinExitFlagThreshold, MEMUNIT,  "0"),
@@ -1604,6 +1609,18 @@ options_act(const or_options_t *old_options)
       old_options->RelayBandwidthBurst != options->RelayBandwidthBurst)
     connection_bucket_init();
 #endif
+ 
+  /* jwang */
+  pc_throttle_globals_t* pct = get_pc_throttle_globals();
+
+  if(options->PerConnBWThreshold > 0.0) {
+    pct->threshold_throttling_enabled = 1;
+    log_notice(LD_CONFIG, "enabled adaptive throttling using threshold %f " 
+			"and refresh every %i seconds",
+			options->PerConnBWThreshold, options->PerConnBWRefresh);
+  } else {
+    pct->threshold_throttling_enabled = 0;
+  } 
 
   old_ewma_enabled = cell_ewma_enabled();
   /* Change the cell EWMA settings */
@@ -1747,10 +1764,13 @@ options_act(const or_options_t *old_options)
         return -1;
     }
 
+    /* jwang */
     if (options->PerConnBWRate != old_options->PerConnBWRate ||
-        options->PerConnBWBurst != old_options->PerConnBWBurst)
+        options->PerConnBWBurst != old_options->PerConnBWBurst || 
+	options->PerConnBWThreshold != old_options->PerConnBWThreshold) {
       connection_or_update_token_buckets(get_connection_array(), options);
-  }
+    } 
+ }
 
   /* Only collect directory-request statistics on relays and bridges. */
   options->DirReqStatistics = options->DirReqStatistics_option &&
@@ -3295,6 +3315,15 @@ options_validate(or_options_t *old_options, or_options_t *options,
   if (ensure_bandwidth_cap(&options->PerConnBWBurst,
                            "PerConnBWBurst", msg) < 0)
     return -1;
+
+  if (options->PerConnBWThreshold < 0.0 || options->PerConnBWThreshold > 1.0) {
+    tor_asprintf(msg, "PerConnBWThreshold is set to %f, but must range between"
+                        "%f and %f",
+                        options->PerConnBWThreshold,
+                        0.0, 1.0);
+    return -1;
+  }
+
   if (ensure_bandwidth_cap(&options->AuthDirFastGuarantee,
                            "AuthDirFastGuarantee", msg) < 0)
     return -1;

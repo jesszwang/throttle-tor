@@ -25,5 +25,7 @@ unsigned int cell_ewma_get_tick(void);
 void cell_ewma_set_scale_factor(const or_options_t *options,
                                 const networkstatus_t *consensus);
 
+static void scale_single_cell_ewma(cell_ewma_t *ewma, unsigned cur_tick, double scale_base);
+
 #endif /* TOR_CIRCUITMUX_EWMA_H */
 
